@@ -12,6 +12,16 @@ const tires: Tire[] = [
   { id: 'Traseiro esquerdo', position: '2E', status: 'Bom', pressure: '106 PSI', tread: '15,1 mm', life: 91, top: '78%', left: '73%' },
   { id: 'Traseiro direito', position: '2D', status: 'Bom', pressure: '104 PSI', tread: '14,6 mm', life: 86, top: '77%', left: '21%' },
 ]
+const truckModel = { name: 'DAF', path: '/model/truck-daf' }
+
+const formatApiResponse = (data: unknown) => {
+  if (typeof data === 'string') return data
+  try {
+    return JSON.stringify(data, null, 2) ?? String(data)
+  } catch {
+    return String(data)
+  }
+}
 
 function TruckScene({ onTireSelect }: { onTireSelect: (tire: Tire) => void }) {
   const mountRef = useRef<HTMLDivElement>(null)
@@ -72,7 +82,7 @@ function TruckScene({ onTireSelect }: { onTireSelect: (tire: Tire) => void }) {
     const tireMeshes: THREE.Mesh[] = []
     const tireGeometry = new THREE.CylinderGeometry(0.63, 0.63, 0.34, 32)
     const rimGeometry = new THREE.CylinderGeometry(0.29, 0.29, 0.36, 24)
-    const wheelPositions: [number, number, number, number][] = [[-2.25, 0.65, 1.82, 0], [-2.25, 0.65, -1.82, 1], [1.45, 0.65, 1.82, 2], [1.45, 0.65, -1.82, 3]]
+    const wheelPositions: [number, number, number, number][] = [[-2.25, 1.55, 1.82, 0], [-2.25, 1.55, -1.82, 1], [1.45, 1.55, 1.82, 2], [1.45, 1.55, -1.82, 3]]
     wheelPositions.forEach(([x, y, z, tireIndex]) => {
       const wheel = new THREE.Mesh(tireGeometry, rubber)
       wheel.rotation.x = Math.PI / 2
@@ -86,19 +96,23 @@ function TruckScene({ onTireSelect }: { onTireSelect: (tire: Tire) => void }) {
       truck.add(rim)
       tireMeshes.push(wheel)
     })
-    truck.position.set(0.72, -0.1, 0)
+    truck.position.set(0.72, 1.15, 0)
     scene.add(truck)
     const modelMeshes: THREE.Mesh[] = []
     let importedModel: THREE.Object3D | null = null
+    let importedModelCenter = new THREE.Vector3()
+    let importedModelSize = new THREE.Vector3()
     const modelLoader = new OBJLoader()
     const loadModel = (model: THREE.Group) => {
       importedModel = model
       const modelBounds = new THREE.Box3().setFromObject(model)
       const modelSize = modelBounds.getSize(new THREE.Vector3())
       const modelCenter = modelBounds.getCenter(new THREE.Vector3())
+      importedModelCenter = modelCenter.clone()
+      importedModelSize = modelSize.clone()
       const scale = 4.9 / Math.max(modelSize.x, modelSize.y, modelSize.z)
       model.scale.setScalar(scale)
-      model.position.set(-modelCenter.x * scale, -modelCenter.y * scale + 0.58, -modelCenter.z * scale)
+      model.position.set(-modelCenter.x * scale, -modelCenter.y * scale + 1.15, -modelCenter.z * scale)
       model.rotation.y = Math.PI
       model.traverse((child) => {
         if (!(child instanceof THREE.Mesh)) return
@@ -110,34 +124,47 @@ function TruckScene({ onTireSelect }: { onTireSelect: (tire: Tire) => void }) {
       scene.add(model)
     }
     const materialLoader = new MTLLoader()
-    materialLoader.load('/model/camion%20jugete.mtl', (materials) => {
+    materialLoader.load(`${truckModel.path}/truck_daf.mtl`, (materials) => {
       materials.preload()
       modelLoader.setMaterials(materials)
-      modelLoader.load('/model/camion%20jugete.obj', loadModel)
-    }, undefined, () => modelLoader.load('/model/camion%20jugete.obj', loadModel))
+      modelLoader.load(`${truckModel.path}/truck_daf.obj`, loadModel)
+    }, undefined, () => modelLoader.load(`${truckModel.path}/truck_daf.obj`, loadModel))
     const floor = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.5, 0.18, 64), new THREE.MeshStandardMaterial({ color: 0x29323c, metalness: 0.75, roughness: 0.38 }))
-    floor.position.y = -0.08
+    floor.position.y = -0.05
     floor.receiveShadow = true
     scene.add(floor)
 
     let dragging = false
+    let moved = false
     let lastX = 0
-    const pointerDown = (event: PointerEvent) => { dragging = true; lastX = event.clientX; renderer.domElement.setPointerCapture(event.pointerId) }
-    const pointerMove = (event: PointerEvent) => { if (!dragging) return; rotationRef.current += (event.clientX - lastX) * 0.01; lastX = event.clientX }
+    const pointerDown = (event: PointerEvent) => { dragging = true; moved = false; lastX = event.clientX; renderer.domElement.setPointerCapture(event.pointerId) }
+    const pointerMove = (event: PointerEvent) => {
+      if (!dragging) return
+      const deltaX = event.clientX - lastX
+      if (Math.abs(deltaX) > 2) moved = true
+      rotationRef.current += deltaX * 0.01
+      lastX = event.clientX
+    }
     const pointerUp = () => { dragging = false }
     const wheel = (event: WheelEvent) => { event.preventDefault(); camera.position.multiplyScalar(event.deltaY > 0 ? 1.08 : 0.92); camera.position.clampLength(6, 13) }
     const click = (event: MouseEvent) => {
-      if (dragging) return
+      if (dragging || moved) return
       const bounds = renderer.domElement.getBoundingClientRect()
       const pointer = new THREE.Vector2(((event.clientX - bounds.left) / bounds.width) * 2 - 1, -((event.clientY - bounds.top) / bounds.height) * 2 + 1)
       const raycaster = new THREE.Raycaster()
       raycaster.setFromCamera(pointer, camera)
-      const hit = raycaster.intersectObjects(modelMeshes.length ? modelMeshes : tireMeshes)[0]
+      const tireHit = raycaster.intersectObjects(tireMeshes, false)[0]
+      if (tireHit) {
+        onTireSelect(tires[tireHit.object.userData.tireIndex as number])
+        return
+      }
+      const hit = raycaster.intersectObjects(modelMeshes, true)[0]
       if (hit) {
-        const hitPoint = hit.point
+        const hitPoint = importedModel ? importedModel.worldToLocal(hit.point.clone()) : hit.point
         const nearestTire = tires.reduce((closest, _, index) => {
-          const expectedX = index < 2 ? -2.25 : 1.45
-          const distance = Math.abs(hitPoint.x - (expectedX + 0.72))
+          const expectedX = importedModelCenter.x + (index < 2 ? 0.32 : -0.32) * importedModelSize.x
+          const expectedZ = importedModelCenter.z + (index % 2 === 0 ? 0.36 : -0.36) * importedModelSize.z
+          const distance = Math.hypot((hitPoint.x - expectedX) / importedModelSize.x, (hitPoint.z - expectedZ) / importedModelSize.z)
           return distance < closest.distance ? { distance, index } : closest
         }, { distance: Infinity, index: 0 })
         onTireSelect(tires[nearestTire.index])
@@ -168,11 +195,35 @@ function App() {
   const [selectedTire, setSelectedTire] = useState<Tire | null>(null)
   const [plate, setPlate] = useState('ABC1D23')
   const [showHelp, setShowHelp] = useState(false)
+  const [vehicleData, setVehicleData] = useState<unknown>(null)
+  const [plateLoading, setPlateLoading] = useState(false)
+  const [plateError, setPlateError] = useState<string | null>(null)
+
+  const fetchVehicleByPlate = async (plateValue: string) => {
+    const normalizedPlate = plateValue.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
+    if (!normalizedPlate) return
+
+    setPlateLoading(true)
+    setPlateError(null)
+    try {
+      const response = await fetch(`/api/crlvs/placa/${encodeURIComponent(normalizedPlate)}`)
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null) as { message?: string } | null
+        throw new Error(errorBody?.message ?? `Não foi possível consultar a placa (${response.status}).`)
+      }
+      setVehicleData(await response.json())
+    } catch (error) {
+      setVehicleData(null)
+      setPlateError(error instanceof Error ? error.message : 'Não foi possível consultar a placa.')
+    } finally {
+      setPlateLoading(false)
+    }
+  }
 
   return <main className="app-shell">
-    <header className="topbar"><div className="brand-lockup"><div className="brand-mark">◉</div><div><h1>Controle de Pneus</h1><p>Troca, Recapagens e Vida Útil</p></div></div><button className="settings-button" type="button" aria-label="Abrir configurações">⚙ <span>Configurações</span></button></header>
+    <header className="topbar"><div className="brand-lockup"><div className="brand-mark">◉</div><div><h1>Controle de Pneus</h1><p>{truckModel.name} • Troca, Recapagens e Vida Útil</p></div></div><button className="settings-button" type="button" aria-label="Abrir configurações">⚙ <span>Configurações</span></button></header>
     <section className="workspace">
-      <div className="plate-area"><span className="eyebrow">Placa do veículo</span><div className="plate"><div className="plate-header">BRASIL <span>◆</span></div><input aria-label="Placa do veículo" maxLength={7} value={plate} onChange={(event) => setPlate(event.target.value.toUpperCase())} /><span className="plate-country">BR</span></div></div>
+      <div className="plate-area"><span className="eyebrow">Placa do veículo</span><div className="plate"><div className="plate-header">BRASIL <span>◆</span></div><input aria-label="Placa do veículo" maxLength={7} value={plate} onChange={(event) => setPlate(event.target.value.toUpperCase())} onBlur={() => void fetchVehicleByPlate(plate)} onKeyDown={(event) => { if (event.key === 'Enter') void fetchVehicleByPlate(plate) }} /><span className="plate-country">BR</span></div>{plateLoading && <span className="plate-feedback">Consultando...</span>}{plateError && <span className="plate-feedback plate-error">{plateError}</span>}{vehicleData !== null && <span className="plate-feedback plate-success">Veículo localizado</span>}{(plateLoading || plateError || vehicleData !== null) && <section className="plate-response" aria-live="polite"><div className="plate-response-header"><span>Resposta da consulta</span><strong>{plate}</strong></div>{plateLoading ? <p className="plate-response-state">Consultando dados...</p> : plateError ? <p className="plate-response-state plate-error">{plateError}</p> : <pre>{formatApiResponse(vehicleData)}</pre>}</section>}</div>
       <TruckScene onTireSelect={setSelectedTire} />
       <div className="rotate-hint"><b>↪</b><span>Arraste para girar o caminhão</span><b>↩</b></div>
       <div className="guide-panel"><button className="guide-title" type="button" onClick={() => setShowHelp(!showHelp)}>ⓘ <span>Como usar</span><i /></button>{showHelp && <p className="help-copy">Selecione um pneu no caminhão para consultar pressão, sulco e vida útil.</p>}<div className="guide-items"><div><strong>♧</strong><p><b>Clique em um pneu</b><br />para ver detalhes</p></div><div><strong>⟳</strong><p><b>Registre trocas</b><br />e recapagens</p></div><div><strong>▥</strong><p><b>Acompanhe a vida útil</b><br />de cada pneu</p></div></div></div>
